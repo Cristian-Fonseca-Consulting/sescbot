@@ -1,0 +1,63 @@
+name: Monitor SESC
+
+on:
+  schedule:
+    # A cada 15 minutos. Horario em UTC (Curitiba = UTC-3).
+    # O GitHub nao garante pontualidade em cron: atrasos de 5-20 min sao normais.
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      reset:
+        description: "Apagar a baseline e comecar do zero"
+        type: boolean
+        default: false
+
+# Nao deixa duas execucoes se atropelarem ao escrever o estado.json
+concurrency:
+  group: monitor-sesc
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Resetar baseline
+        if: inputs.reset
+        run: rm -f estado.json
+
+      - name: Verificar liberacao
+        env:
+          SESC_COD_MEIO_HOSPEDAGEM: ${{ vars.SESC_COD_MEIO_HOSPEDAGEM || '34' }}
+          SESC_NOME_UNIDADE: ${{ vars.SESC_NOME_UNIDADE || 'Sesc PR' }}
+          SESC_DIA_SOLTO: ${{ vars.SESC_DIA_SOLTO || 'true' }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python sesc_watch.py
+
+      - name: Salvar estado
+        run: |
+          if [ -z "$(git status --porcelain estado.json)" ]; then
+            echo "Nada mudou."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add estado.json
+          git commit -m "estado: $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git pull --rebase --autostash
+          git push
