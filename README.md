@@ -1,9 +1,9 @@
 # sescbot
 
-Monitor de liberação de finais de semana no SESC PR (Reserva Online). Roda no
-GitHub Actions a cada 15 min, consulta o site e avisa no Telegram quando um
-dia de sexta/sábado/domingo sai da lista de "indisponíveis" e abre para
-reserva.
+Monitor de liberação de datas no SESC PR (Reserva Online). Roda no GitHub
+Actions a cada 15 min, consulta o site e avisa no Telegram quando qualquer
+data sai da lista de "indisponíveis" e abre para reserva — inclusive dia de
+semana.
 
 ## Como funciona
 
@@ -14,11 +14,16 @@ O site do SESC PR expõe duas listas de datas:
 - `DatasBloqueio` — unidade fechada, não vai liberar.
 
 Uma data que **não está em nenhuma das duas** está aberta para reserva agora.
-O evento monitorado é: um dia de FDS que estava em `DatasIndisponiveis` e
-deixou de estar (sem cair em `DatasBloqueio`).
+O evento monitorado é: qualquer data que estava em `DatasIndisponiveis` e
+deixou de estar (sem cair em `DatasBloqueio`), seja dia de semana ou fim de
+semana.
 
 O script guarda um snapshot em `estado.json` a cada execução e compara com o
 snapshot anterior. A primeira execução só grava a baseline, sem notificar.
+Quando alguma data nova abre, a notificação lista **todas** as datas abertas
+no momento (não só a que mudou), do dia de hoje até a fronteira do
+calendário, cada uma com o dia da semana — assim fica claro o que é fim de
+semana e o que não é.
 
 Datas além da última data publicada nas duas listas (a "fronteira do
 calendário") são ignoradas — não são "livres", é só o que o site ainda não
@@ -49,8 +54,8 @@ webhook nem long polling: a cada execução (a cada 15 min), o script chama
 comandos acumulados desde a última rodada. Latência de até 15 min é normal.
 
 - `/status` — unidade monitorada, última verificação, fronteira do
-  calendário, estadias abertas agora, total de dias na fila e de datas
-  bloqueadas.
+  calendário, total de datas abertas agora (e quantas são de FDS), e total
+  de datas bloqueadas.
 - `/fila` — dias de FDS ainda em `DatasIndisponiveis`, agrupados por mês.
 
 ## Configuração (variáveis de ambiente)
@@ -59,7 +64,6 @@ comandos acumulados desde a última rodada. Latência de até 15 min é normal.
 |---|---|---|
 | `SESC_COD_MEIO_HOSPEDAGEM` | `34` | Código da unidade no site |
 | `SESC_NOME_UNIDADE` | `unidade 34` | Nome exibido nas mensagens |
-| `SESC_DIA_SOLTO` | `true` | Notificar dias soltos de FDS liberados, mesmo sem estadia completa |
 | `SESC_STATE_FILE` | `estado.json` | Caminho do snapshot de estado |
 | `TELEGRAM_BOT_TOKEN` | — | Token do bot (via @BotFather) |
 | `TELEGRAM_CHAT_ID` | — | Chat para onde notificar |
@@ -74,8 +78,7 @@ repo ao final de cada execução, só se algo mudou.
 Configure em **Settings → Secrets and variables → Actions**:
 
 - Secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
-- Variables (opcionais): `SESC_COD_MEIO_HOSPEDAGEM`, `SESC_NOME_UNIDADE`,
-  `SESC_DIA_SOLTO`.
+- Variables (opcionais): `SESC_COD_MEIO_HOSPEDAGEM`, `SESC_NOME_UNIDADE`.
 
 Use um repositório **público**: no privado, Actions grátis dá 2.000
 min/mês, e rodar a cada 15 min consome ~2.900 min/mês. Em repositório

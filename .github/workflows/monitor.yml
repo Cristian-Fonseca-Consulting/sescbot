@@ -44,7 +44,6 @@ jobs:
         env:
           SESC_COD_MEIO_HOSPEDAGEM: ${{ vars.SESC_COD_MEIO_HOSPEDAGEM || '34' }}
           SESC_NOME_UNIDADE: ${{ vars.SESC_NOME_UNIDADE || 'Sesc PR' }}
-          SESC_DIA_SOLTO: ${{ vars.SESC_DIA_SOLTO || 'true' }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python sesc_watch.py

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Monitor de liberacao de finais de semana - SESC PR (Reserva Online)
+Monitor de liberacao de datas - SESC PR (Reserva Online)
 
 Semantica dos endpoints:
   DatasIndisponiveis -> datas que AINDA NAO foram liberadas para reserva.
@@ -8,7 +8,10 @@ Semantica dos endpoints:
   DatasBloqueio      -> datas em que a unidade nao opera / nao vai liberar.
 
 O bot guarda um retrato das duas listas a cada execucao e avisa quando
-um dia de fim de semana deixa de estar indisponivel.
+QUALQUER data (nao so fim de semana) deixa de estar indisponivel. A
+mensagem lista todas as datas abertas no momento, do dia de hoje ate a
+fronteira do calendario publicado pelo site, com o dia da semana de cada
+uma.
 
 Como o GitHub Actions nao mantem processo ligado, os comandos /status e
 /fila do bot Telegram sao respondidos por polling: ao final de cada
@@ -41,17 +44,6 @@ URL_BLOQUEIO = f"{BASE}/DatasBloqueio"
 
 COD_MEIO_HOSPEDAGEM = os.getenv("SESC_COD_MEIO_HOSPEDAGEM", "34")
 NOME_UNIDADE = os.getenv("SESC_NOME_UNIDADE", f"unidade {COD_MEIO_HOSPEDAGEM}")
-
-# Padroes de estadia de fim de semana. (nome, weekday_checkin, diarias)
-# weekday: 0=segunda ... 4=sexta, 5=sabado, 6=domingo
-PADROES = [
-    ("Sex-Dom (2 diarias)", 4, 2),
-    ("Sab-Dom (1 diaria)", 5, 1),
-]
-
-# Notificar tambem quando so um dia solto de FDS liberar,
-# mesmo sem formar uma estadia completa
-NOTIFICAR_DIA_SOLTO = os.getenv("SESC_DIA_SOLTO", "true").lower() == "true"
 
 STATE_FILE = Path(os.getenv("SESC_STATE_FILE", "estado.json"))
 
@@ -132,30 +124,19 @@ def horizonte(indisponiveis, bloqueios):
     return max(conhecidas) if conhecidas else date.today()
 
 
-def estadias_livres(indisponiveis, bloqueios, inicio=None, limite=None):
-    """Fins de semana completos disponiveis para reserva agora."""
+def datas_abertas(indisponiveis, bloqueios, inicio=None, limite=None):
+    """Todas as datas livres para reserva agora, de qualquer dia da semana,
+    entre inicio e a fronteira do calendario publicado."""
     inicio = inicio or date.today()
     limite = limite or horizonte(indisponiveis, bloqueios)
     ocupadas = indisponiveis | bloqueios
-    achados = []
-
-    for nome, weekday, diarias in PADROES:
-        d = inicio
-        while d.weekday() != weekday:
-            d += timedelta(days=1)
-        while d + timedelta(days=diarias - 1) <= limite:
-            noites = [d + timedelta(days=i) for i in range(diarias)]
-            if all(n not in ocupadas for n in noites):
-                checkout = d + timedelta(days=diarias)
-                achados.append({
-                    "id": f"{d.isoformat()}|{diarias}",
-                    "checkin": d.isoformat(),
-                    "label": f"{nome}: {fmt(d)} -> {fmt(checkout)}",
-                })
-            d += timedelta(days=7)
-
-    achados.sort(key=lambda x: x["checkin"])
-    return achados
+    abertas = []
+    d = inicio
+    while d <= limite:
+        if d not in ocupadas:
+            abertas.append(d)
+        d += timedelta(days=1)
+    return abertas
 
 
 def fila_de_espera(indisponiveis, bloqueios):
@@ -178,7 +159,7 @@ def ler_estado():
         return {
             "indisponiveis": {date.fromisoformat(x) for x in e.get("indisponiveis", [])},
             "bloqueios": {date.fromisoformat(x) for x in e.get("bloqueios", [])},
-            "estadias": set(e.get("estadias", [])),
+            "abertas": {date.fromisoformat(x) for x in e.get("abertas", [])},
             "ultima_execucao": e.get("ultima_execucao"),
             "telegram_offset": e.get("telegram_offset", 0),
         }
@@ -187,11 +168,11 @@ def ler_estado():
         return None
 
 
-def salvar_estado(indisponiveis, bloqueios, estadias, telegram_offset=0):
+def salvar_estado(indisponiveis, bloqueios, abertas, telegram_offset=0):
     STATE_FILE.write_text(json.dumps({
         "indisponiveis": sorted(d.isoformat() for d in indisponiveis),
         "bloqueios": sorted(d.isoformat() for d in bloqueios),
-        "estadias": sorted(estadias),
+        "abertas": sorted(d.isoformat() for d in abertas),
         "ultima_execucao": datetime.now().isoformat(timespec="seconds"),
         "telegram_offset": telegram_offset,
     }, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -267,20 +248,19 @@ def obter_atualizacoes(offset):
     return resultados, novo_offset
 
 
-def texto_status(indisponiveis, bloqueios, estadias, limite, ultima_execucao):
-    fds_na_fila = sum(1 for d in indisponiveis if eh_fds(d) and d not in bloqueios and d >= date.today())
+def texto_status(abertas, bloqueios, limite, ultima_execucao):
+    fds_abertas = sum(1 for d in abertas if eh_fds(d))
     linhas = [
         f"*Status - {NOME_UNIDADE}*",
         f"Ultima verificacao: {ultima_execucao or 'agora'}",
         f"Calendario publicado ate: {fmt(limite)}",
-        f"Estadias abertas agora: {len(estadias)}",
-        f"Dias de FDS na fila: {fds_na_fila}",
+        f"Datas abertas agora: {len(abertas)} ({fds_abertas} de fim de semana)",
         f"Datas bloqueadas: {len(bloqueios)}",
     ]
-    if estadias:
+    if abertas:
         linhas.append("")
         linhas.append("Abertas agora:")
-        linhas += [f"  - {x['label']}" for x in estadias]
+        linhas += [f"  - {fmt(d)}" for d in abertas]
     return "\n".join(linhas)
 
 
@@ -294,7 +274,7 @@ def texto_fila(espera):
     return "\n".join(linhas)
 
 
-def processar_comandos(offset, indisponiveis, bloqueios, estadias, limite, ultima_execucao):
+def processar_comandos(offset, abertas, bloqueios, indisponiveis, limite, ultima_execucao):
     """Le comandos acumulados desde a ultima rodada e responde. Devolve o novo offset."""
     atualizacoes, novo_offset = obter_atualizacoes(offset)
     if not atualizacoes:
@@ -312,7 +292,7 @@ def processar_comandos(offset, indisponiveis, bloqueios, estadias, limite, ultim
 
         comando = texto.split()[0].split("@")[0]
         if comando == "/status":
-            enviar_mensagem(chat_id, texto_status(indisponiveis, bloqueios, estadias, limite, ultima_execucao))
+            enviar_mensagem(chat_id, texto_status(abertas, bloqueios, limite, ultima_execucao))
         elif comando == "/fila":
             enviar_mensagem(chat_id, texto_fila(espera))
 
@@ -332,69 +312,63 @@ def executar(apenas_status=False):
         return 1
 
     limite = horizonte(indisponiveis, bloqueios)
-    estadias = estadias_livres(indisponiveis, bloqueios, limite=limite)
-    ids_estadias = {x["id"] for x in estadias}
+    abertas = datas_abertas(indisponiveis, bloqueios, limite=limite)
+    abertas_set = set(abertas)
     espera = fila_de_espera(indisponiveis, bloqueios)
 
     agora = datetime.now().strftime("%d/%m/%Y %H:%M")
     print(f"[{agora}] {NOME_UNIDADE} | {len(indisponiveis)} nao liberadas, "
-          f"{len(bloqueios)} bloqueadas | calendario ate {limite.strftime('%d/%m/%Y')}")
+          f"{len(bloqueios)} bloqueadas, {len(abertas)} abertas | "
+          f"calendario ate {limite.strftime('%d/%m/%Y')}")
 
     anterior = ler_estado()
     offset = anterior["telegram_offset"] if anterior else 0
 
     if anterior is None:
         print("  primeira execucao - salvando baseline, sem notificar")
-        for x in estadias:
-            print(f"    ja livre: {x['label']}")
+        for d in abertas:
+            print(f"    ja aberta: {fmt(d)}")
         for mes, dias in espera.items():
             print(f"    aguardando {mes}: {len(dias)} dias de FDS")
         if not apenas_status:
-            offset = processar_comandos(offset, indisponiveis, bloqueios, estadias, limite, None)
-            salvar_estado(indisponiveis, bloqueios, ids_estadias, offset)
+            offset = processar_comandos(offset, abertas, bloqueios, indisponiveis, limite, None)
+            salvar_estado(indisponiveis, bloqueios, abertas_set, offset)
         return 0
 
-    # --- o evento que importa: dia de FDS que saiu da lista de indisponiveis
-    liberados = sorted(
-        d for d in (anterior["indisponiveis"] - indisponiveis)
-        if eh_fds(d) and d not in bloqueios and d >= date.today()
-    )
-    # estadias completas que passaram a existir
-    novas_estadias = [x for x in estadias if x["id"] not in anterior["estadias"]]
-    # regressao: algo que estava livre e sumiu (alguem reservou ou re-bloqueou)
-    perdidas = sorted(anterior["estadias"] - ids_estadias)
+    # --- o evento que importa: uma data que saiu da lista de indisponiveis
+    novas = sorted(abertas_set - anterior["abertas"])
+    # regressao: algo que estava aberto e sumiu (alguem reservou ou re-bloqueou)
+    perdidas = sorted(anterior["abertas"] - abertas_set)
 
-    for x in estadias:
-        marca = "NOVO" if x["id"] not in anterior["estadias"] else "    "
-        print(f"  {marca} {x['label']}")
+    for d in abertas:
+        marca = "NOVO" if d in novas else "    "
+        print(f"  {marca} {fmt(d)}")
     for mes, dias in espera.items():
         print(f"       aguardando {mes}: {len(dias)} dias de FDS")
 
-    if (liberados or novas_estadias) and not apenas_status:
-        linhas = []
-        if novas_estadias:
-            linhas.append("Estadias que abriram:")
-            linhas += [f"  - {x['label']}" for x in novas_estadias]
-        soltos = [d for d in liberados
-                  if not any(x["checkin"] == d.isoformat() for x in novas_estadias)]
-        if soltos and NOTIFICAR_DIA_SOLTO:
-            linhas.append("Dias de FDS liberados:")
-            linhas += [f"  - {fmt(d)}" for d in soltos]
-        linhas.append(f"\nReservar: {BASE}/Index")
-        notificar(f"Liberou fim de semana - {NOME_UNIDADE}", "\n".join(linhas))
+    if novas and not apenas_status:
+        linhas = [
+            "Novas datas liberadas:",
+            *[f"  - {fmt(d)}" for d in novas],
+            "",
+            f"Todas as datas abertas ({len(abertas)}):",
+            *[f"  - {fmt(d)}" for d in abertas],
+            f"\nReservar: {BASE}/Index",
+        ]
+        notificar(f"Datas liberadas - {NOME_UNIDADE}", "\n".join(linhas))
 
     if perdidas:
-        print(f"  [info] {len(perdidas)} estadia(s) deixaram de estar livres")
+        print(f"  [info] {len(perdidas)} data(s) deixaram de estar livres")
 
     if not apenas_status:
-        offset = processar_comandos(offset, indisponiveis, bloqueios, estadias, limite,
+        offset = processar_comandos(offset, abertas, bloqueios, indisponiveis, limite,
                                      anterior["ultima_execucao"])
-        salvar_estado(indisponiveis, bloqueios, ids_estadias, offset)
+        salvar_estado(indisponiveis, bloqueios, abertas_set, offset)
     return 0
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Monitor de liberacao de FDS - SESC PR")
+    ap = argparse.ArgumentParser(description="Monitor de liberacao de datas - SESC PR")
     ap.add_argument("--loop", type=int, metavar="SEGUNDOS", help="roda continuamente")
     ap.add_argument("--status", action="store_true", help="so mostra, nao notifica nem grava")
     ap.add_argument("--reset", action="store_true", help="apaga a baseline e sai")
