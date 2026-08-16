@@ -282,7 +282,8 @@ def processar_comandos(offset, abertas, bloqueios, indisponiveis, limite, ultima
 
     espera = fila_de_espera(indisponiveis, bloqueios)
     for u in atualizacoes:
-        msg = u.get("message") or {}
+        # canal manda "channel_post", chat privado/grupo manda "message"
+        msg = u.get("message") or u.get("channel_post") or {}
         texto = (msg.get("text") or "").strip().lower()
         chat_id = msg.get("chat", {}).get("id")
         if not chat_id or not texto.startswith("/"):
