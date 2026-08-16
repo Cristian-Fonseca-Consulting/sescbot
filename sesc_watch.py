@@ -248,18 +248,27 @@ def obter_atualizacoes(offset):
     return resultados, novo_offset
 
 
+def fmt_ts(iso):
+    """Formata o timestamp ISO de ultima_execucao como dd/mm/yyyy HH:MM."""
+    if not iso:
+        return "agora"
+    return datetime.fromisoformat(iso).strftime("%d/%m/%Y %H:%M")
+
+
 def texto_status(abertas, bloqueios, limite, ultima_execucao):
     fds_abertas = sum(1 for d in abertas if eh_fds(d))
     linhas = [
         f"*Status - {NOME_UNIDADE}*",
-        f"Ultima verificacao: {ultima_execucao or 'agora'}",
+        "",
+        f"Ultima verificacao: {fmt_ts(ultima_execucao)}",
         f"Calendario publicado ate: {fmt(limite)}",
+        "",
         f"Datas abertas agora: {len(abertas)} ({fds_abertas} de fim de semana)",
         f"Datas bloqueadas: {len(bloqueios)}",
     ]
     if abertas:
         linhas.append("")
-        linhas.append("Abertas agora:")
+        linhas.append("*Abertas agora:*")
         linhas += [f"  - {fmt(d)}" for d in abertas]
     return "\n".join(linhas)
 
@@ -267,10 +276,10 @@ def texto_status(abertas, bloqueios, limite, ultima_execucao):
 def texto_fila(espera):
     if not espera:
         return "Fila vazia: nenhum dia de FDS aguardando liberacao dentro do calendario publicado."
-    linhas = ["*Fila de espera (FDS ainda indisponiveis)*"]
+    linhas = ["*Fila de espera (FDS ainda indisponiveis)*", ""]
     for mes, dias in espera.items():
         dias_str = ", ".join(str(d.day) for d in dias)
-        linhas.append(f"{mes}: {dias_str}")
+        linhas.append(f"*{mes}:* {dias_str}")
     return "\n".join(linhas)
 
 
@@ -349,12 +358,13 @@ def executar(apenas_status=False):
 
     if novas and not apenas_status:
         linhas = [
-            "Novas datas liberadas:",
+            "*Novas datas liberadas:*",
             *[f"  - {fmt(d)}" for d in novas],
             "",
-            f"Todas as datas abertas ({len(abertas)}):",
+            f"*Todas as datas abertas ({len(abertas)}):*",
             *[f"  - {fmt(d)}" for d in abertas],
-            f"\nReservar: {BASE}/Index",
+            "",
+            f"Reservar: {BASE}/Index",
         ]
         notificar(f"Datas liberadas - {NOME_UNIDADE}", "\n".join(linhas))
 
