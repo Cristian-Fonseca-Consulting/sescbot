@@ -6,12 +6,19 @@ Semantica dos endpoints:
   DatasIndisponiveis -> datas que AINDA NAO foram liberadas para reserva.
                         Quando uma data SAI dessa lista, abriu a reserva.
   DatasBloqueio      -> datas em que a unidade nao opera / nao vai liberar.
+  DatasPacote        -> datas que so podem ser reservadas como pacote de
+                        fim de semana completo (normalmente Sex->Dom, ou
+                        Sex->Seg quando cai feriado), nunca avulsas. Um
+                        dia dentro de um pacote so esta de fato reservavel
+                        se TODAS as noites do bloco estiverem livres.
 
-O bot guarda um retrato das duas listas a cada execucao e avisa quando
-QUALQUER data (nao so fim de semana) deixa de estar indisponivel. A
-mensagem lista todas as datas abertas no momento, do dia de hoje ate a
-fronteira do calendario publicado pelo site, com o dia da semana de cada
-uma.
+O bot guarda um retrato das listas a cada execucao e avisa quando
+QUALQUER data (nao so fim de semana) deixa de estar indisponivel. Datas de
+pacote sao tratadas em bloco: um sabado que "abriu" sozinho mas cuja sexta
+ainda esta indisponivel nao conta como aberto, porque o site nao deixa
+reservar so o sabado. A mensagem lista todas as datas abertas no momento,
+do dia de hoje ate a fronteira do calendario publicado pelo site, com o
+dia da semana de cada uma.
 
 Como o GitHub Actions nao mantem processo ligado, os comandos /status e
 /fila do bot Telegram sao respondidos por polling: ao final de cada
@@ -39,6 +46,7 @@ import requests
 BASE = "https://www.sescpr.com.br/ReservaOnline/Reserva"
 URL_INDISPONIVEIS = f"{BASE}/DatasIndisponiveis"
 URL_BLOQUEIO = f"{BASE}/DatasBloqueio"
+URL_PACOTE = f"{BASE}/DatasPacote"
 
 # ---------------------------------------------------------------- config ----
 
@@ -124,16 +132,40 @@ def horizonte(indisponiveis, bloqueios):
     return max(conhecidas) if conhecidas else date.today()
 
 
-def datas_abertas(indisponiveis, bloqueios, inicio=None, limite=None):
+def blocos_pacote(pacote):
+    """Agrupa as datas de pacote em blocos de dias consecutivos
+    (ex: sex+sab+dom vira um bloco so)."""
+    dias = sorted(pacote)
+    blocos = []
+    atual = []
+    for d in dias:
+        if atual and d != atual[-1] + timedelta(days=1):
+            blocos.append(atual)
+            atual = []
+        atual.append(d)
+    if atual:
+        blocos.append(atual)
+    return blocos
+
+
+def datas_abertas(indisponiveis, bloqueios, pacote, inicio=None, limite=None):
     """Todas as datas livres para reserva agora, de qualquer dia da semana,
-    entre inicio e a fronteira do calendario publicado."""
+    entre inicio e a fronteira do calendario publicado.
+
+    Datas de pacote so contam como abertas se o bloco inteiro (todas as
+    noites do fim de semana) estiver livre - o site nao deixa reservar
+    so um dia avulso dentro de um pacote."""
     inicio = inicio or date.today()
     limite = limite or horizonte(indisponiveis, bloqueios)
     ocupadas = indisponiveis | bloqueios
+    dia_para_bloco = {d: bloco for bloco in blocos_pacote(pacote) for d in bloco}
+
     abertas = []
     d = inicio
     while d <= limite:
-        if d not in ocupadas:
+        bloco = dia_para_bloco.get(d)
+        livre = all(x not in ocupadas for x in bloco) if bloco else d not in ocupadas
+        if livre:
             abertas.append(d)
         d += timedelta(days=1)
     return abertas
@@ -317,12 +349,13 @@ def executar(apenas_status=False):
     try:
         indisponiveis = buscar(sessao, URL_INDISPONIVEIS)
         bloqueios = buscar(sessao, URL_BLOQUEIO)
+        pacote = buscar(sessao, URL_PACOTE)
     except (requests.RequestException, ValueError) as e:
         print(f"[erro] falha ao consultar: {e}", file=sys.stderr)
         return 1
 
     limite = horizonte(indisponiveis, bloqueios)
-    abertas = datas_abertas(indisponiveis, bloqueios, limite=limite)
+    abertas = datas_abertas(indisponiveis, bloqueios, pacote, limite=limite)
     abertas_set = set(abertas)
     espera = fila_de_espera(indisponiveis, bloqueios)
 
